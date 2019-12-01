@@ -1,13 +1,18 @@
 import { Stream } from "xstream";
 
-function moveElement<TElement>(
-  arr: TElement[],
-  fromIndex: number,
-  toIndex: number
-) {
-  var element = arr[fromIndex];
-  arr.splice(fromIndex, 1);
-  arr.splice(toIndex, 0, element);
+function findIndexInOld<TElementModel>(
+  children: (EachRenderedSNode<TElementModel> | undefined)[],
+  key: string,
+  beginIndex: number,
+  endIndex: number
+): number | undefined {
+  for (let i = beginIndex; i <= endIndex; i += 1) {
+    if (children[i]?.key === key) {
+      return i;
+    }
+  }
+
+  return undefined;
 }
 
 class DText<TModel> {
@@ -88,34 +93,71 @@ class DElement<TModel> {
           this.insertNodeQueue.push(child.currentSNode.node);
         }
       } else {
+        const currentSNodes: (EachRenderedSNode<unknown> | undefined)[] =
+          child.currentSNodes;
         let oldStartIndex = 0;
         let oldEndIndex = child.currentSNodes.length - 1;
         let newStartIndex = 0;
         const elementModelArray = child.getElementModelArray(model);
         let newEndIndex = elementModelArray.length - 1;
+        const currentSNodesMap: Map<
+          string,
+          EachRenderedSNode<unknown>
+        > = new Map();
+        for (const node of child.currentSNodes) {
+          currentSNodesMap.set(node.key, node);
+        }
+        const nextSNodes: EachRenderedSNode<unknown>[] = [];
+        for (const elementModel of elementModelArray) {
+          const elementKey = child.getKey(elementModel);
+          const elementInOld = currentSNodesMap.get(elementKey);
+
+          if (elementInOld) {
+            elementInOld.sNode.patch(elementModel);
+            nextSNodes.push(elementInOld);
+          } else {
+            const nextElement = new EachRenderedSNode(
+              elementKey,
+              child.createElement()
+            );
+            nextElement.sNode.patch(elementModel);
+            nextSNodes.push(nextElement);
+          }
+        }
 
         while (oldStartIndex <= oldEndIndex && newStartIndex <= newEndIndex) {
-          const oldStartRenderedSNode = child.currentSNodes[oldStartIndex];
-          const oldStartSNode = child.currentSNodes[oldStartIndex].sNode;
+          const oldStartRenderedSNode = currentSNodes[oldStartIndex];
+
+          if (oldStartRenderedSNode === undefined) {
+            oldStartIndex += 1;
+            continue;
+          }
+
+          const oldStartSNode = oldStartRenderedSNode.sNode;
           const oldStartKey = oldStartRenderedSNode.key;
-          const newStartModel = elementModelArray[newStartIndex];
-          const newStartKey = child.getKey(newStartModel);
+          const newStartRenderedSNode = nextSNodes[newStartIndex];
+          const newStartSNode = nextSNodes[newStartIndex].sNode;
+          const newStartKey = newStartRenderedSNode.key;
 
           if (oldStartKey === newStartKey) {
-            oldStartSNode.patch(newStartModel);
             oldStartIndex += 1;
             newStartIndex += 1;
             continue;
           }
 
-          const oldEndRenderedSNode = child.currentSNodes[oldEndIndex];
-          const oldEndSNode = child.currentSNodes[oldEndIndex].sNode;
+          const oldEndRenderedSNode = currentSNodes[oldEndIndex];
+
+          if (oldEndRenderedSNode === undefined) {
+            oldStartIndex += 1;
+            continue;
+          }
+
+          const oldEndSNode = oldEndRenderedSNode.sNode;
           const oldEndKey = oldEndRenderedSNode.key;
-          const newEndModel = elementModelArray[newEndIndex];
-          const newEndKey = child.getKey(newEndModel);
+          const newEndRenderedSNode = nextSNodes[newEndIndex];
+          const newEndKey = newEndRenderedSNode.key;
 
           if (oldEndKey === newEndKey) {
-            oldEndSNode.patch(newEndModel);
             oldEndIndex -= 1;
             newEndIndex -= 1;
             continue;
@@ -123,12 +165,10 @@ class DElement<TModel> {
 
           if (oldStartKey === newEndKey) {
             // Element moved right
-            oldStartSNode.patch(newEndModel);
             this.node.insertBefore(
               oldStartSNode.node,
               oldEndSNode.node.nextSibling
             );
-            moveElement(child.currentSNodes, oldStartIndex, oldEndIndex);
             oldStartIndex += 1;
             newEndIndex -= 1;
             continue;
@@ -136,59 +176,29 @@ class DElement<TModel> {
 
           if (oldEndIndex === newStartIndex) {
             // Element moved left
-            oldEndSNode.patch(newStartModel);
             this.node.insertBefore(oldEndSNode.node, oldStartSNode.node);
-            moveElement(child.currentSNodes, oldEndIndex, oldStartIndex);
             oldEndIndex -= 1;
             newStartIndex += 1;
             continue;
           }
 
           const indexInOld = findIndexInOld(
-            child.currentSNodes,
+            currentSNodes,
             newStartKey,
             oldStartIndex,
             oldEndIndex
           );
 
-          if (indexInOld === null) {
+          if (indexInOld === undefined) {
             // New element
-            const element = new EachRenderedSNode(
-              newStartKey,
-              child.createElement()
-            );
-            element.sNode.patch(newStartModel);
-            child.currentSNodes.push(element);
-            this.node.insertBefore(element.sNode.node, oldStartSNode.node);
+            this.node.insertBefore(newStartSNode.node, oldStartSNode.node);
             newStartIndex += 1;
             continue;
           }
 
-          // if (sameVnode(oldEndVnode, newStartVnode)) { // Vnode moved left
-          //   patchVnode(oldEndVnode, newStartVnode, insertedVnodeQueue);
-          //   api.insertBefore(parentElm, oldEndVnode.elm!, oldStartVnode.elm!);
-          //   oldEndVnode = oldCh[--oldEndIdx];
-          //   newStartVnode = newCh[++newStartIdx];
-          // } else {
-          //   if (oldKeyToIdx === undefined) {
-          //     oldKeyToIdx = createKeyToOldIdx(oldCh, oldStartIdx, oldEndIdx);
-          //   }
-          //   idxInOld = oldKeyToIdx[newStartVnode.key as string];
-          //   if (isUndef(idxInOld)) { // New element
-          //     api.insertBefore(parentElm, createElm(newStartVnode, insertedVnodeQueue), oldStartVnode.elm!);
-          //     newStartVnode = newCh[++newStartIdx];
-          //   } else {
-          //     elmToMove = oldCh[idxInOld];
-          //     if (elmToMove.sel !== newStartVnode.sel) {
-          //       api.insertBefore(parentElm, createElm(newStartVnode, insertedVnodeQueue), oldStartVnode.elm!);
-          //     } else {
-          //       patchVnode(elmToMove, newStartVnode, insertedVnodeQueue);
-          //       oldCh[idxInOld] = undefined as any;
-          //       api.insertBefore(parentElm, elmToMove.elm!, oldStartVnode.elm!);
-          //     }
-          //     newStartVnode = newCh[++newStartIdx];
-          //   }
-          // }
+          const sNodeToMove = currentSNodes[indexInOld]!.sNode;
+          currentSNodes[indexInOld] = undefined;
+          this.node.insertBefore(sNodeToMove.node, oldStartSNode.node);
         }
       }
     }
@@ -221,21 +231,6 @@ type EachSNode<TModel> = DElement<TModel> | DText<TModel> | SText;
 
 class EachRenderedSNode<TModel> {
   constructor(readonly key: string, readonly sNode: EachSNode<TModel>) {}
-}
-
-function findIndexInOld(
-  children: EachRenderedSNode<unknown>[],
-  key: string,
-  beginIndex: number,
-  endIndex: number
-): number | null {
-  for (let i = beginIndex; i <= endIndex; i += 1) {
-    if (children[i].key === key) {
-      return i;
-    }
-  }
-
-  return null;
 }
 
 class ForEach<TModel, TElementModel> {
